@@ -8,145 +8,148 @@ import {
   Radio, 
   RadioGroup, 
   FormControlLabel, 
-  FormControl,
+  FormControl, 
+  FormLabel,
   CircularProgress,
-  Alert
+  Alert,
+  Stepper,
+  Step,
+  StepLabel
 } from '@mui/material';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
 import { generateQuiz, analyzeCompatibility } from '../../services/api';
 
 function Quiz() {
-  const [questions, setQuestions] = useState([]);
-  const [currentQuestion, setCurrentQuestion] = useState(0);
-  const [answers, setAnswers] = useState({});
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
+  const [questions, setQuestions] = useState([]);
+  const [answers, setAnswers] = useState({});
+  const [currentQuestion, setCurrentQuestion] = useState(0);
   const [error, setError] = useState(null);
   
   const location = useLocation();
   const navigate = useNavigate();
+  const { currentUser } = useAuth();
   const { showNotification } = useNotification();
   
-  // Extract data from location state
-  const { resumeData, jobDescription } = location.state || {};
+  // Get resume and job description from location state
+  const resumeData = location.state?.resumeData;
+  const jobDescription = location.state?.jobDescription;
   
   useEffect(() => {
-    // If no resume data or job description, redirect to dashboard
     if (!resumeData || !jobDescription) {
       showNotification('Missing resume or job description', 'error');
       navigate('/dashboard');
       return;
     }
     
-    // Fetch quiz questions
-    const fetchQuestions = async () => {
+    const loadQuiz = async () => {
       try {
         setLoading(true);
         setError(null);
         
         const quizQuestions = await generateQuiz(resumeData.text, jobDescription);
-        
-        if (!quizQuestions || quizQuestions.length === 0) {
-          throw new Error('No questions generated');
-        }
-        
         setQuestions(quizQuestions);
         
-        // Initialize answers object with empty values
+        // Initialize answers object
         const initialAnswers = {};
         quizQuestions.forEach((_, index) => {
           initialAnswers[index] = null;
         });
         setAnswers(initialAnswers);
         
+        setLoading(false);
       } catch (error) {
-        console.error('Error fetching questions:', error);
-        setError(error.message || 'Failed to generate quiz questions');
-        showNotification('Failed to generate quiz questions', 'error');
-      } finally {
+        console.error('Error loading quiz:', error);
+        setError(error.message || "Failed to load quiz");
+        showNotification('Failed to load quiz: ' + error.message, 'error');
         setLoading(false);
       }
     };
     
-    fetchQuestions();
+    loadQuiz();
   }, [resumeData, jobDescription, navigate, showNotification]);
   
   const handleAnswerChange = (event) => {
-    const value = parseInt(event.target.value, 10);
+    const selectedAnswer = parseInt(event.target.value);
     setAnswers({
       ...answers,
-      [currentQuestion]: value
+      [currentQuestion]: selectedAnswer
     });
   };
   
-  const handleNext = () => {
-    if (currentQuestion < questions.length - 1) {
-      setCurrentQuestion(currentQuestion + 1);
-    }
-  };
-  
   const handlePrevious = () => {
-    if (currentQuestion > 0) {
-      setCurrentQuestion(currentQuestion - 1);
-    }
+    setCurrentQuestion(currentQuestion - 1);
   };
   
-  const handleSubmit = async () => {
-    // Check if all questions are answered
-    const unansweredQuestions = Object.values(answers).filter(answer => answer === null).length;
-    
-    if (unansweredQuestions > 0) {
-      showNotification(`Please answer all questions (${unansweredQuestions} remaining)`, 'warning');
-      return;
-    }
-    
-    try {
+  const handleNext = async () => {
+    if (currentQuestion < questions.length - 1) {
+      // Move to next question
+      setCurrentQuestion(currentQuestion + 1);
+    } else {
+      // Quiz completed, calculate results
       setAnalyzing(true);
-      setError(null);
       
-      // Calculate score
-      let score = 0;
-      Object.keys(answers).forEach(questionIndex => {
-        const question = questions[questionIndex];
-        if (answers[questionIndex] === question.correctAnswer) {
-          score++;
-        }
-      });
-      
-      const quizResults = {
-        score,
-        totalQuestions: questions.length,
-        answers
-      };
-      
-      // Analyze compatibility
-      const analysis = await analyzeCompatibility(
-        resumeData.text, 
-        jobDescription,
-        score
-      );
-      
-      if (!analysis) {
-        throw new Error('Failed to generate analysis');
-      }
-      
-      // Navigate to results page with all data
-      navigate('/results', {
-        state: {
-          resumeData,
+      try {
+        // Calculate score
+        let score = 0;
+        const quizFeedback = [];
+        
+        Object.keys(answers).forEach(questionIndex => {
+          const q = parseInt(questionIndex);
+          const selectedAnswer = answers[q];
+          const correctAnswer = questions[q].correctAnswer;
+          const isCorrect = selectedAnswer === correctAnswer;
+          
+          if (isCorrect) {
+            score++;
+          }
+          
+          // Store feedback for this question
+          quizFeedback.push({
+            questionIndex: q,
+            selectedAnswer,
+            correctAnswer,
+            isCorrect,
+            explanation: isCorrect 
+              ? questions[q].explanation 
+              : questions[q].wrongExplanations[selectedAnswer > correctAnswer ? selectedAnswer - 1 : selectedAnswer]
+          });
+        });
+        
+        // Format quiz results
+        const quizResults = {
+          score,
+          totalQuestions: questions.length,
+          answers,
+          feedback: quizFeedback,
+          questions // Store the full questions array
+        };
+        
+        // Call API to analyze compatibility
+        const analysis = await analyzeCompatibility(
+          resumeData.text,
           jobDescription,
-          quizResults,
-          analysis
-        }
-      });
-      
-    } catch (error) {
-      console.error('Error analyzing results:', error);
-      setError(error.message || 'Failed to analyze results');
-      showNotification('Failed to analyze results', 'error');
-    } finally {
-      setAnalyzing(false);
+          quizResults
+        );
+        
+        // Navigate to results page with all data
+        navigate('/results', {
+          state: {
+            resumeData,
+            jobDescription,
+            quizResults,
+            analysis
+          }
+        });
+      } catch (error) {
+        console.error('Error analyzing results:', error);
+        setError(error.message || "Failed to analyze results");
+        showNotification('Failed to analyze results: ' + error.message, 'error');
+        setAnalyzing(false);
+      }
     }
   };
   
@@ -166,7 +169,10 @@ function Quiz() {
       <Container maxWidth="md" sx={{ py: 4, textAlign: 'center' }}>
         <CircularProgress />
         <Typography variant="h6" sx={{ mt: 2 }}>
-          Analyzing your responses...
+          Analyzing your results...
+        </Typography>
+        <Typography variant="body2" sx={{ mt: 1, color: 'text.secondary' }}>
+          This may take a minute or two
         </Typography>
       </Container>
     );
@@ -185,92 +191,66 @@ function Quiz() {
     );
   }
   
-  if (!questions || questions.length === 0) {
-    return (
-      <Container maxWidth="md" sx={{ py: 4 }}>
-        <Alert severity="warning" sx={{ mb: 3 }}>
-          No questions could be generated. Please try again with a different job description.
-        </Alert>
-        <Button variant="contained" onClick={() => navigate('/dashboard')}>
-          Back to Dashboard
-        </Button>
-      </Container>
-    );
-  }
-  
-  const currentQuestionData = questions[currentQuestion];
-  
   return (
     <Container maxWidth="md" sx={{ py: 4 }}>
-      <Typography variant="h4" gutterBottom>
-        Technical Skills Assessment
-      </Typography>
+      <Typography variant="h4" sx={{ mb: 4 }}>Technical Assessment</Typography>
       
-      <Box sx={{ mb: 4 }}>
-        <Typography variant="body1">
-          Answer these questions based on the job requirements to help us assess your technical fit.
-        </Typography>
-      </Box>
+      <Stepper activeStep={currentQuestion} sx={{ mb: 4 }}>
+        {questions.map((_, index) => (
+          <Step key={index}>
+            <StepLabel>{`Q${index + 1}`}</StepLabel>
+          </Step>
+        ))}
+      </Stepper>
       
-      <Paper elevation={1} sx={{ p: 3, mb: 4 }}>
-        <Box sx={{ mb: 2, display: 'flex', justifyContent: 'space-between' }}>
-          <Typography variant="h6">
-            Question {currentQuestion + 1} of {questions.length}
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            {Object.values(answers).filter(a => a !== null).length} of {questions.length} answered
-          </Typography>
-        </Box>
+      <Paper elevation={3} sx={{ p: 4, borderRadius: 2 }}>
+        {questions.length > 0 && (
+          <FormControl component="fieldset" sx={{ width: '100%' }}>
+            <FormLabel component="legend" sx={{ mb: 2 }}>
+              <Typography variant="h6">
+                Question {currentQuestion + 1} of {questions.length}
+              </Typography>
+            </FormLabel>
+            
+            <Typography variant="body1" sx={{ mb: 3 }}>
+              {questions[currentQuestion].question}
+            </Typography>
+            
+            <RadioGroup
+              value={answers[currentQuestion] !== null ? answers[currentQuestion].toString() : ''}
+              onChange={handleAnswerChange}
+            >
+              {questions[currentQuestion].options.map((option, index) => (
+                <FormControlLabel
+                  key={index}
+                  value={index.toString()}
+                  control={<Radio />}
+                  label={option}
+                  sx={{ mb: 1 }}
+                />
+              ))}
+            </RadioGroup>
+          </FormControl>
+        )}
         
-        <Typography variant="body1" sx={{ mb: 3 }}>
-          {currentQuestionData.question}
-        </Typography>
-        
-        <FormControl component="fieldset" sx={{ width: '100%' }}>
-          <RadioGroup
-            value={answers[currentQuestion] !== null ? answers[currentQuestion] : ''}
-            onChange={handleAnswerChange}
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 4 }}>
+          <Button
+            variant="outlined"
+            onClick={handlePrevious}
+            disabled={currentQuestion === 0}
           >
-            {currentQuestionData.options.map((option, index) => (
-              <FormControlLabel
-                key={index}
-                value={index}
-                control={<Radio />}
-                label={option}
-                sx={{ mb: 1 }}
-              />
-            ))}
-          </RadioGroup>
-        </FormControl>
-      </Paper>
-      
-      <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-        <Button 
-          variant="outlined" 
-          onClick={handlePrevious}
-          disabled={currentQuestion === 0}
-        >
-          Previous
-        </Button>
-        
-        {currentQuestion < questions.length - 1 ? (
-          <Button 
-            variant="contained" 
+            Previous
+          </Button>
+          
+          <Button
+            variant="contained"
             onClick={handleNext}
             disabled={answers[currentQuestion] === null}
           >
-            Next
+            {currentQuestion === questions.length - 1 ? 'Finish Quiz' : 'Next'}
           </Button>
-        ) : (
-          <Button 
-            variant="contained" 
-            onClick={handleSubmit}
-            disabled={Object.values(answers).some(answer => answer === null)}
-          >
-            Submit
-          </Button>
-        )}
-      </Box>
+        </Box>
+      </Paper>
     </Container>
   );
 }
